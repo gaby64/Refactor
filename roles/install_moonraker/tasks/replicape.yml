@@ -67,6 +67,7 @@
     dest: /home/debian/printer_data/config/printer.cfg
     regexp: '^#\s*\[include mainsail.cfg\]*$'
     line: '[include mainsail.cfg]'
+  register: moonraker
 
 - name: Recore - Create moonraker_components
   file:

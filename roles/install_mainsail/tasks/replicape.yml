@@ -43,7 +43,7 @@
 
 - name: Recore - Download mainsail
   unarchive:
-    src: https://github.com/intelligent-agent/mainsail/releases/latest/download/mainsail.zip
+    src: https://github.com/mainsail-crew/mainsail/releases/latest/download/mainsail.zip
     dest: /home/debian/mainsail
     remote_src: yes
 

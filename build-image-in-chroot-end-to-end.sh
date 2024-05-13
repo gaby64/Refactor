@@ -7,10 +7,16 @@ if [ "$#" -lt 1 ]; then
 	exit
 fi
 
-if [ "$#" -eq 2 ]; then
+if [ "$#" -gt 1 ]; then
 	SYSTEM_ANSIBLE=$2
 else
 	SYSTEM_ANSIBLE=SYSTEM_klipper_octoprint-DEFAULT.yml
+fi
+
+if [ "$#" -eq 3 ]; then
+	RESUME=$3
+else
+	RESUME=0
 fi
 
 if [ ! -f ${SYSTEM_ANSIBLE} ]; then
@@ -21,107 +27,132 @@ fi
 set -x
 set -e
 
-
 TARGET_PLATFORM=$1
 
-for f in $(ls BaseLinux/${TARGET_PLATFORM}/*)
-  do
-    source $f
-  done
-if [ -f "customize.sh" ] ; then
-  source customize.sh
-fi
-
-TARGETIMAGE=refactor-${TARGET_PLATFORM}-rootfs.img
-MOUNTPOINT=$(mktemp -d /tmp/umikaze-root.XXXXXX)
 REFACTOR_HOME="/usr/src/Refactor"
+MOUNTPOINT=$(mktemp -d /tmp/umikaze-root.XXXXXX)
+for f in $(ls BaseLinux/${TARGET_PLATFORM}/*)
+do
+	source $f
+done
 
-if [ ! -f $BASEIMAGE ]; then
-    wget -q $BASEIMAGE_URL -O $BASEIMAGE
+if [ ${RESUME} -eq 1 -a -f "resume.img" ]; then
+	cp resume.img use.img
+	DEVICE=`losetup -P -f --show use.img`
+	echo "preparing the partition layout"
+	if [ ${TARGET_PLATFORM} == "recore" ]; then
+		PARTITION=${DEVICE}p2
+	fi
+	if [ ${TARGET_PLATFORM} == 'replicape' ]; then
+		PARTITION=${DEVICE}p1
+	fi
+	echo "Beginning the mount sequence."
+	mount ${PARTITION} ${MOUNTPOINT}
+	if [ ${TARGET_PLATFORM} == "recore" ]; then
+		mount ${DEVICE}p1 ${MOUNTPOINT}/boot
+	fi
+	mount -o bind /dev ${MOUNTPOINT}/dev
+	mount -o bind /sys ${MOUNTPOINT}/sys
+	mount -o bind /proc ${MOUNTPOINT}/proc
+	mount -o bind /dev/pts ${MOUNTPOINT}/dev/pts
+
+	rm -rf ${MOUNTPOINT}${REFACTOR_HOME}/*
+	find "$(pwd)" -mindepth 1 -maxdepth 1 ! -name "*.img" ! -name "*.7z" -exec cp -r {} ${MOUNTPOINT}${REFACTOR_HOME} \;
+else
+	
+	if [ -f "customize.sh" ] ; then
+		source customize.sh
+	fi
+
+	TARGETIMAGE=refactor-${TARGET_PLATFORM}-rootfs.img
+
+	if [ ! -f $BASEIMAGE ]; then
+		wget -q $BASEIMAGE_URL -O $BASEIMAGE
+	fi
+
+	rm -f $TARGETIMAGE
+	decompress || $(echo "check your Linux platform file is correct!"; exit) # defined in the BaseLinux/{platform}/Linux file
+
+	echo "preparing the partition layout"
+	if [ ${TARGET_PLATFORM} == "recore" ]; then
+		truncate -s 6000M $TARGETIMAGE
+		DEVICE=`losetup -P -f --show $TARGETIMAGE`
+		PARTITION=${DEVICE}p2
+		printf "%s\n%s\n\n%s : start=8192, size=524288, type=83\n%s : start=532480, size=11303520, type=83\n" \
+			"# partition table of ${DEVICE}" \
+			"unit: sectors" \
+			"${DEVICE}p1" \
+			"${DEVICE}p2" > image.layout
+	fi
+
+	if [ ${TARGET_PLATFORM} == 'replicape' ]; then
+		truncate -s 6000M $TARGETIMAGE
+		DEVICE=`losetup -P -f --show $TARGETIMAGE`
+		PARTITION=${DEVICE}p1
+		#7364608
+		printf "%s\n%s\n\n%s : start=8192, size=12000000, type=83\n" \
+			"# partition table of ${DEVICE}" \
+			"unit: sectors" \
+			"${DEVICE}p1" > image.layout
+	fi
+
+	sfdisk --delete ${DEVICE}
+	# Perform actual modifications to the partition layout
+	sfdisk ${DEVICE} < image.layout
+	echo "checking the filesystem..."
+
+	e2fsck -f -p ${PARTITION}
+	clean_status=$?
+	if [ "$clean_status" -ne "0" ]; then
+		echo "had to clear out something on the FS..."
+	fi
+	echo "resizing"
+	resize2fs ${PARTITION}
+
+	echo "Beginning the mount sequence."
+	mount ${PARTITION} ${MOUNTPOINT}
+	cp /usr/bin/qemu-arm-static ${MOUNTPOINT}/usr/bin/
+	if [ ${TARGET_PLATFORM} == "recore" ]; then
+		mount ${DEVICE}p1 ${MOUNTPOINT}/boot
+	fi
+	mount -o bind /dev ${MOUNTPOINT}/dev
+	mount -o bind /sys ${MOUNTPOINT}/sys
+	mount -o bind /proc ${MOUNTPOINT}/proc
+	mount -o bind /dev/pts ${MOUNTPOINT}/dev/pts
+
+	rm ${MOUNTPOINT}/etc/resolv.conf
+	echo "nameserver 8.8.8.8" >> ${MOUNTPOINT}/etc/resolv.conf
+
+	# don't git clone here - if someone did a commit since this script started, Unexpected Things will happen
+	# instead, do a deep copy so the image has a git repo as well
+	mkdir -p ${MOUNTPOINT}${REFACTOR_HOME}
+
+	find "$(pwd)" -mindepth 1 -maxdepth 1 ! -name "*.img" ! -name "*.7z" -exec cp -r {} ${MOUNTPOINT}${REFACTOR_HOME} \;
+
+	set +e # allow this to fail - we'll check the return code
+	chroot ${MOUNTPOINT} su -c "\
+	cd ${REFACTOR_HOME} && \
+	apt update && DEBIAN_FRONTEND=noninteractive apt -y upgrade && \
+	apt install -y git ansible && \
+	export LC_ALL=\"en_US.UTF-8\" && \
+	locale-gen --purge en_US.UTF-8 && \
+	echo -e 'LANG=en_US.UTF-8\nLANGUAGE=\"en_CA:en\"\nLC_CTYPE=\"en_US.UTF-8\"\nLC_ALL=\"en_US.UTF-8\"\n' > /etc/default/locale && \
+	apt install -y python3-pip python3-venv build-essential ansible"
+	if [ ${RESUME} -eq 1 ] ; then
+		chroot ${MOUNTPOINT} su -c "sync && df -h"
+		df -h
+		echo "Generating resume.img now."
+		blocksize=$(fdisk -l $DEVICE | grep Units: | awk '{printf $8}')
+		count=$(fdisk -l -o Device,End $DEVICE | grep $PARTITION | awk '{printf $2}')
+		ddcount=$((count*blocksize/1000000+1))
+		dd if=$DEVICE bs=1MB count=${ddcount} status=progress > resume.img
+	fi
 fi
 
-rm -f $TARGETIMAGE
-decompress || $(echo "check your Linux platform file is correct!"; exit) # defined in the BaseLinux/{platform}/Linux file
-
-echo "preparing the partition layout"
-if [ ${TARGET_PLATFORM} == "recore" ]; then
-	truncate -s 6000M $TARGETIMAGE
-	DEVICE=`losetup -P -f --show $TARGETIMAGE`
-	PARTITION=${DEVICE}p2
-	cat <<EOF > image.layout
-# partition table of ${DEVICE}
-unit: sectors
-
-${DEVICE}p1 : start=8192, size=524288, type=83
-${DEVICE}p2 : start=532480, size=11303520, type=83
-EOF
-fi
-
-if [ ${TARGET_PLATFORM} == 'replicape' ]; then
-	truncate -s 3600M $TARGETIMAGE
-	DEVICE=`losetup -P -f --show $TARGETIMAGE`
-	PARTITION=${DEVICE}p1
-	cat <<EOF > image.layout
-# partition table of ${DEVICE}
-unit: sectors
-
-${DEVICE}p1 : start=8192, size=7364608, type=83
-EOF
-fi
-
-
-sfdisk --delete ${DEVICE}
-# Perform actual modifications to the partition layout
-sfdisk ${DEVICE} < image.layout
-echo "checking the filesystem..."
-
-e2fsck -f -p ${PARTITION}
-clean_status=$?
-if [ "$clean_status" -ne "0" ]; then
-	echo "had to clear out something on the FS..."
-fi
-echo "resizing"
-resize2fs ${PARTITION}
-
-echo "Beginning the mount sequence."
-mount ${PARTITION} ${MOUNTPOINT}
-if [ ${TARGET_PLATFORM} == "recore" ]; then
-	mount ${DEVICE}p1 ${MOUNTPOINT}/boot
-fi
-mount -o bind /dev ${MOUNTPOINT}/dev
-mount -o bind /sys ${MOUNTPOINT}/sys
-mount -o bind /proc ${MOUNTPOINT}/proc
-mount -o bind /dev/pts ${MOUNTPOINT}/dev/pts
-
-rm ${MOUNTPOINT}/etc/resolv.conf
-echo "nameserver 8.8.8.8" >> ${MOUNTPOINT}/etc/resolv.conf
-
-# don't git clone here - if someone did a commit since this script started, Unexpected Things will happen
-# instead, do a deep copy so the image has a git repo as well
-mkdir -p ${MOUNTPOINT}${REFACTOR_HOME}
-
-shopt -s dotglob # include hidden files/directories so we get .git
-shopt -s extglob # allow excluding so we can hide the img files
-cp -r `pwd`/!(*.img*|*.7z) ${MOUNTPOINT}${REFACTOR_HOME}
-shopt -u extglob
-shopt -u dotglob
-
-set +e # allow this to fail - we'll check the return code
 chroot ${MOUNTPOINT} su -c "\
 cd ${REFACTOR_HOME} && \
-echo \"Europe/Oslo\" > /etc/timezone && \
-dpkg-reconfigure -f noninteractive tzdata && \
-sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen && \
-echo LC_ALL=en_US.UTF-8 > /etc/default/locale && \
-dpkg-reconfigure --frontend=noninteractive locales && \
-update-locale LC_ALL=en_US.UTF-8 && \
-apt update && DEBIAN_FRONTEND=noninteractive apt -y upgrade << EOF
-y
-EOF && \
-apt install -y python3-pip python3-venv build-essential ansible << EOF
-y
-EOF"
-chroot ${MOUNTPOINT} su -c "\
+apt install -y debconf-utils && \
+cat /etc/resolv.conf
 LC_ALL=en_US.UTF-8 ansible-playbook ${SYSTEM_ANSIBLE} -T 180 --extra-vars '${ANSIBLE_PLATFORM_VARS}' -i hosts -e 'ansible_python_interpreter=/usr/bin/python3'"
 
 status=$?
@@ -140,6 +171,10 @@ if [ ${TARGET_PLATFORM} == "recore" ]; then
 fi
 umount -l ${MOUNTPOINT}
 rmdir ${MOUNTPOINT}
+
+if [ ${RESUME} -eq 1 -a -f "use.img" ]; then
+	rm use.img
+fi
 
 if [ $status -eq 0 ]; then
     echo "Looks like the image was prepared successfully - packing it up"

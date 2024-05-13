@@ -1,4 +1,4 @@
 ---
 - name: Recore - Install KlipperScreen
   include: recore.yml
-  when: platform == 'recore'
+  when: platform == 'recore' or platform == 'replicape'

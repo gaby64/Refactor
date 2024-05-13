@@ -108,13 +108,13 @@
     name: root
     password: "{{ 'kamikaze' | password_hash('sha512') }}"
 
-- name: force user to change debian password on first login
-  shell:
-    cmd: "chage -d 0 debian"
+# - name: force user to change debian password on first login
+#   shell:
+#     cmd: "chage -d 0 debian"
 
-- name: force user to change root password on first login
-  shell:
-    cmd: "chage -d 0 root"
+# - name: force user to change root password on first login
+#   shell:
+#     cmd: "chage -d 0 root"
 
 - name: create issue and issue.net file
   file:
@@ -169,11 +169,6 @@
     path: /boot/uEnv.txt
     line: disable_uboot_overlay_audio=1
     state: present
-
-- name: Reflash pru firmware
-  command:
-    chdir: /home/debian/klipper
-    cmd: ./scripts/flash-pru.sh
 
 - name: Replicape - fix home ownership
   command: chown -R debian:debian /home/debian

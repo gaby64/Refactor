@@ -5,6 +5,8 @@
     - firmware: klipper
   roles:
     - install_klipper
+    - install_mjpgstreamer
+    - install_weston
     - install_ustreamer
     - install_moonraker
     - install_mainsail

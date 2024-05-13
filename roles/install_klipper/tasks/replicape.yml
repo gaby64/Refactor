@@ -1,20 +1,54 @@
 ---
-- name: Replicape - get installed kernel version
-  shell: ls /lib/modules
-  register: kernel_version
 
 - name: Replicape - install git
   apt:
     name:
+      - libgpiod-dev
+      - gpiod
       - git
-      - python-is-python3
     state: latest
+
+- name: Replicape - install build packages
+  apt:
+    name:
+      - build-essential
+      - python3-libxml2
+      - python3-cffi
+      - libc6-dev
+      - python3-dev
+
+- name: Replicape - ensure the debian user exists
+  user:
+    name: debian
+    comment: Default user for OctoPrint
+    shell: /bin/bash
+    groups: tty,dialout
+    append: yes
+    expires: -1
+    home: /home/debian
+
+- name: Replicape - give debian permissions to python folders for updates
+  file:
+    path: '{{ item }}'
+    group: debian
+    owner: debian
+    mode: 0755
+    recurse: yes
+    state: directory
+  with_items:
+    - /home/debian
+    - /usr/local/lib/python3
+    - /usr/local/bin
 
 - name: Replicape - Remove unwanted packages
   apt:
     name:
       - bbb.io-kernel-5.10-ti
     state: absent
+
+- name: Replicape - get installed kernel version
+  shell: ls /lib/modules
+  register: kernel_version
 
 - name: Replicape - set kernel version to 4.19-ti
   apt:
@@ -32,6 +66,18 @@
     clone: yes
     depth: 1
 
+- name: Replicape - replace python-dev with python3-dev in install-debian.sh
+  ansible.builtin.replace:
+    path: '{{ klipper_home }}/scripts/install-debian.sh'
+    regexp:  '(\s+)python-dev(\s+.*)?$'
+    replace: '\1python3-dev\2'
+
+- name: Replicape - replace python2 with python3 in install-debian.sh
+  ansible.builtin.replace:
+    path: '{{ klipper_home }}/scripts/install-debian.sh'
+    regexp:  '(\s+)python2(\s+.*)?$'
+    replace: '\1python3\2'
+
 - name: Replicape - add debian user to tty group
   user:
     name: debian
@@ -43,6 +89,13 @@
     name:
       - gcc-pru
     state: latest
+
+- name: Replicape - adjust ownership of klipper source
+  file:
+    path: "{{ klipper_home }}"
+    owner: debian
+    group: debian
+    recurse: yes
 
 - name: Replicape - give debian user the klipper service permissions
   lineinfile:
@@ -63,8 +116,6 @@
     state: absent
   with_items:
     - install-debian.sh
-    - install-octopi.sh
-    - install-ubuntu-18.04.sh
 
 - name: Replicape - Remove stm32 compiler and libs
   lineinfile:
@@ -73,13 +124,6 @@
     state: absent
   with_items:
     - install-debian.sh
-
-- name: Replicape - adjust ownership of klipper source
-  file:
-    path: "{{ klipper_home }}"
-    owner: debian
-    group: debian
-    recurse: yes
 
 - name: Replicape - install Klipper with the install scripts
   shell: "export USER=debian; {{ klipper_home }}/scripts/install-beaglebone.sh"
@@ -97,13 +141,6 @@
   systemd:
     name: klipper_pru.service
     state: stopped
-
-- name: Replicape - adjust ownership of klipper source
-  file:
-    path: "{{ klipper_home }}"
-    owner: debian
-    group: debian
-    recurse: yes
 
 - name: Replicape - git safe directory config
   shell: git config --global --add safe.directory /home/debian/klipper
@@ -220,3 +257,23 @@
     insertbefore: enable_uboot_cape_universal=1
     state: present
     path: /boot/uEnv.txt
+
+- name: Replicape - make sure the sudoers.d/debian file exists
+  file:
+    path: /etc/sudoers.d/debian
+    owner: root
+    group: root
+    state: touch
+
+- name: Replicape - create folder for klipper logs in /var/log
+  file:
+    path: /var/log/klipper_logs
+    state: directory
+    mode: '0755'
+    owner: debian
+    group: debian
+
+- name: Reflash pru firmware
+  command:
+    chdir: /home/debian/klipper
+    cmd: ./scripts/flash-pru.sh

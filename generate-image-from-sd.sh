@@ -135,6 +135,10 @@ sync
 echo "Wait for the kernel to re-read the table"
 sleep 5
 
+
+if mountpoint -q "$PARTITION"; then
+  umount $PARTITION
+fi
 e2fsck -f $PARTITION -y
 resize2fs $PARTITION
 e2fsck -f $PARTITION -y

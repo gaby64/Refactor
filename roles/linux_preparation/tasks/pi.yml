@@ -47,7 +47,7 @@
     - iptables-persistent
     - python-pip
     - python3-pip
-    - python-dev
+    - python3-dev
     - libavahi-compat-libdnssd1
     - libnss-mdns
     - byobu
